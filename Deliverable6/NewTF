@@ -1,0 +1,111 @@
+import RPi.GPIO as GPIO
+import time
+
+# GPIO Pins for Motors & Encoders
+motor1_pwm = 13  # Motor 1 PWM control
+motor2_pwm = 12  # Motor 2 PWM control
+motor1_in1 = 20  # Motor 1 direction pin 1
+motor1_in2 = 21  # Motor 1 direction pin 2
+motor2_in1 = 18  # Motor 2 direction pin 1
+motor2_in2 = 19  # Motor 2 direction pin 2
+encoder1_pin = 16  # Motor 1 Encoder Channel A
+encoder2_pin = 26  # Motor 2 Encoder Channel A
+
+# Transfer function parameters
+K1 = 41.044  # Gain for Motor 1 (12V max)
+K2 = 42.24  # Gain for Motor 2 (12V max)
+tau = 0.000125  # Time constant
+dt = 0.1  # Time interval (100ms)
+PPR = 20  # Encoder Pulses Per Revolution
+
+# Initialize RPM variables
+encoder1_count = 0
+encoder2_count = 0
+target_rpm = 75  # Desired RPM for both motors
+
+# PID Controller Parameters
+Kp = 0.8
+Ki = 0.1
+Kd = 0.05
+previous_error1 = 0
+previous_error2 = 0
+integral1 = 0
+integral2 = 0
+
+# GPIO Setup
+GPIO.setmode(GPIO.BCM)
+GPIO.setup([motor1_in1, motor1_in2, motor2_in1, motor2_in2], GPIO.OUT)
+GPIO.setup([motor1_pwm, motor2_pwm], GPIO.OUT)
+GPIO.setup([encoder1_pin, encoder2_pin], GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# Initialize PWM
+pwm_motor1 = GPIO.PWM(motor1_pwm, 100)  # 100 Hz frequency
+pwm_motor2 = GPIO.PWM(motor2_pwm, 100)
+pwm_motor1.start(0)
+pwm_motor2.start(0)
+
+# Encoder Interrupt Service Routine (ISR)
+def encoder1_callback(channel):
+    global encoder1_count
+    encoder1_count += 1
+
+def encoder2_callback(channel):
+    global encoder2_count
+    encoder2_count += 1
+
+# Attach ISR to encoder pins
+GPIO.add_event_detect(encoder1_pin, GPIO.RISING, callback=encoder1_callback)
+GPIO.add_event_detect(encoder2_pin, GPIO.RISING, callback=encoder2_callback)
+
+# Function to compute real RPM
+def get_rpm(encoder_count):
+    return (encoder_count * 60) / (PPR * dt)
+
+# PID Control Function
+def pid_control(target, actual, previous_error, integral):
+    error = target - actual
+    integral += error * dt
+    derivative = (error - previous_error) / dt
+    output = Kp * error + Ki * integral + Kd * derivative
+    return min(max(output, 0), 100), error, integral  # Constrain output to 0-100%
+
+# Function to set motor direction and speed
+def control_motor(direction_motor1, direction_motor2, speed_motor1, speed_motor2):
+    # Set motor directions
+    GPIO.output(motor1_in1, GPIO.HIGH if direction_motor1 == 1 else GPIO.LOW)
+    GPIO.output(motor1_in2, GPIO.LOW if direction_motor1 == 1 else GPIO.HIGH)
+    GPIO.output(motor2_in1, GPIO.HIGH if direction_motor2 == 1 else GPIO.LOW)
+    GPIO.output(motor2_in2, GPIO.LOW if direction_motor2 == 1 else GPIO.HIGH)
+
+    # Set PWM duty cycle
+    pwm_motor1.ChangeDutyCycle(speed_motor1)
+    pwm_motor2.ChangeDutyCycle(speed_motor2)
+
+# Main Loop
+try:
+    while True:
+        #time.sleep(0.1)
+
+        # Measure real RPM
+        rpm_motor1 = get_rpm(encoder1_count)
+        rpm_motor2 = get_rpm(encoder2_count)
+
+        # PID Control to adjust motor speed
+        speed_motor1, previous_error1, integral1 = pid_control(target_rpm, rpm_motor1, previous_error1, integral1)
+        speed_motor2, previous_error2, integral2 = pid_control(target_rpm, rpm_motor2, previous_error2, integral2)
+
+        # Set motor direction (assume forward)
+        control_motor(1, 1, speed_motor1, speed_motor2)
+
+        print(f"Motor 1 Target: {target_rpm} RPM, Actual: {rpm_motor1:.2f} RPM, PWM: {speed_motor1:.2f}%")
+        print(f"Motor 2 Target: {target_rpm} RPM, Actual: {rpm_motor2:.2f} RPM, PWM: {speed_motor2:.2f}%\n")
+
+        # Reset encoder counts
+        #time.sleep(dt)
+        encoder1_count = 0
+        encoder2_count = 0
+
+except KeyboardInterrupt:
+    pwm_motor1.stop()
+    pwm_motor2.stop()
+    GPIO.cleanup()
